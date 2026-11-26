@@ -1,4 +1,5 @@
 # HTTPE — High-Throughput Transaction Processing Engine
+![CI](https://github.com/deepanshu-meena/httpe-payment-engine/actions/workflows/ci.yml/badge.svg)
 
 A sharded payment engine that moves money **correctly** under concurrency, retries and partial failure — and tells you honestly what it does and doesn't guarantee.
 
