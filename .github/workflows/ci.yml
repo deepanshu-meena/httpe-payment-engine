@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push: {branches: [main]}
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: httpe
+          POSTGRES_PASSWORD: httpe
+          POSTGRES_DB: httpe
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U httpe" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - name: Create Postgres shard databases
+        run: |
+          for i in 0 1 2 3; do
+            PGPASSWORD=httpe psql -h localhost -U httpe -d httpe -c "CREATE DATABASE shard_$i;"
+          done
+      - name: Tests (SQLite suite + real-Postgres concurrency tests)
+        env:
+          TEST_POSTGRES_URLS: >-
+            postgresql+psycopg2://httpe:httpe@localhost:5432/shard_0,
+            postgresql+psycopg2://httpe:httpe@localhost:5432/shard_1,
+            postgresql+psycopg2://httpe:httpe@localhost:5432/shard_2,
+            postgresql+psycopg2://httpe:httpe@localhost:5432/shard_3
+        run: pytest -v
+      - name: Benchmark smoke test with correctness audit
+        run: python -m scripts.bench --seconds 5 --threads 8
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t httpe .

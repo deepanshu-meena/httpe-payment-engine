@@ -1,0 +1,72 @@
+# Full production-shaped topology on one machine:
+#   postgres (4 shard DBs) + redpanda (Kafka API) + init job + api + worker
+#   docker compose up --build        ->  http://localhost:8000/docs
+x-app-env: &app-env
+  SHARD_URLS: postgresql+psycopg2://httpe:httpe@postgres:5432/shard_0,postgresql+psycopg2://httpe:httpe@postgres:5432/shard_1,postgresql+psycopg2://httpe:httpe@postgres:5432/shard_2,postgresql+psycopg2://httpe:httpe@postgres:5432/shard_3
+  EVENT_BUS_BACKEND: kafka
+  KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: httpe
+      POSTGRES_PASSWORD: httpe
+      POSTGRES_DB: httpe
+    ports: ["5432:5432"]
+    volumes:
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U httpe -d shard_3"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    # Kafka-API-compatible single binary (no ZooKeeper) so the demo is one container.
+    # Application code only speaks the Kafka protocol - swap for real Kafka via env vars.
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports: ["19092:19092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  init:
+    build: .
+    command: python -m scripts.init_shards
+    environment: *app-env
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  api:
+    build: .
+    environment:
+      <<: *app-env
+      EMBED_WORKER: "false"
+    ports: ["8000:8000"]
+    depends_on:
+      init: {condition: service_completed_successfully}
+      redpanda: {condition: service_healthy}
+
+  worker:
+    build: .
+    command: python -m worker.run
+    environment: *app-env
+    depends_on:
+      init: {condition: service_completed_successfully}
+      redpanda: {condition: service_healthy}
+
+volumes:
+  pg-data:
